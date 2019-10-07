@@ -19,7 +19,7 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv/cv.hpp>
 
-#define harris
+//#define harris
 
 using namespace std;
 using namespace cv;
@@ -28,6 +28,9 @@ int ROW = 480;
 int COL = 640;
 int MAX_CNT = 150;
 int MIN_DIST = 30;
+int iniThFAST = 20;
+int minThFAST = 7;
+
 
 bool inBorder(const cv::Point2f &pt)
 {
@@ -79,7 +82,7 @@ int main ( int argc, char** argv ) {
 
     string rgb_file, depth_file, time_rgb, time_depth;
     cv::Mat forw_img, cur_img;
-    vector<KeyPoint> forw_kpts;
+    vector<KeyPoint> keypoints;;
     vector<Point2f> forw_pts, cur_pts;
     vector<cv::Point2f> n_pts;
     vector<int> track_cnt;
@@ -163,6 +166,7 @@ int main ( int argc, char** argv ) {
         cv::waitKey ( 0 );
 
         //为下一次特征提取做准备
+#ifdef harris
         Mat mask;
         //设置mask用于非极大值抑制
         {
@@ -200,23 +204,164 @@ int main ( int argc, char** argv ) {
                 cout << "mask type wrong " << endl;
             if (mask.size() != forw_img.size())
                 cout << "wrong size " << endl;
-#ifdef harris
+
             //优先从之前跟踪到的特征点中提取角点,虽然这些特征点被非极大值抑制掉了，认为没有成功跟踪，但是可以优先作为新的特征点被提取
             cv::goodFeaturesToTrack(forw_img, n_pts, MAX_CNT - forw_pts.size(), 0.01, MIN_DIST, mask);
-#else
-            vector<KeyPoint> kp;
-            FAST(forw_img,kp,20,true);
-#endif
-
         } else
             n_pts.clear();
+#else
+            vector<KeyPoint> kp;
+            const float W=30;
+            //fast特征点提取
 
+            const int nDesiredFeatures = MAX_CNT - forw_pts.size();
+            if(nDesiredFeatures>0)
+            {
+                const int nCols = int(COL/W);//21
+                const int nRows = int(ROW/W);//16
+                const int nCells = nCols*nRows;
+
+                const int nFeatureEachCell = ceil(float(nDesiredFeatures)/nCells);
+                vector<vector<vector<KeyPoint> > > cellKeyPoints(nRows, vector<vector<KeyPoint> >(nCols));
+
+                //计算每个窗口的大小
+                const int wCell = COL/nCols;//30
+                const int hCell = ROW/nRows;//30
+
+                vector<vector<int>> nTotal(nRows,vector<int>(nCols));
+                vector<vector<bool>> bNoMore(nRows,vector<bool>(nCols,false));
+                vector<vector<int>> nToRetain(nRows,vector<int>(nCols));
+                int nNoMore = 0;
+                int nToDistribute = 0;
+
+
+                for(int i=0; i<nRows; i++)
+                {
+                    //每个窗口纵向的范围
+                    const int iniY =i*hCell;
+                    int maxY = iniY+hCell;
+                    //出了图片的有效区域
+//                if(iniY>=maxBorderY-3)
+//                    continue;
+                    //超出了边界的话就使用图像的边界作为边界
+//                if(maxY>maxBorderY)
+//                    maxY = maxBorderY;
+
+                    for(int j=0; j<nCols; j++)
+                    {
+                        //计算每列的位置
+                        //每个窗口横向的范围
+                        const int iniX =j*wCell;
+                        int maxX = iniX+wCell;
+                        //出了横向范围
+//                    if(iniX>=maxBorderX-6)
+//                        continue;
+                        //超了横向范围，就使用图像的边界作为窗口的边界
+//                    if(maxX>maxBorderX)
+//                        maxX = maxBorderX;
+                        //计算FAST关键点
+                        //vector<cv::KeyPoint> vKeysCell;
+                        //对每一个窗口都计算FAST角点
+                        cellKeyPoints[i][j].reserve(nFeatureEachCell*5);
+                        FAST(forw_img.rowRange(iniY,maxY).colRange(iniX,maxX),
+                             cellKeyPoints[i][j],iniThFAST,true);
+
+                        if(cellKeyPoints[i][j].size()<=3)
+                        {
+                            cellKeyPoints[i][j].clear();
+                            FAST(forw_img.rowRange(iniY,maxY).colRange(iniX,maxX),cellKeyPoints[i][j],7,true);
+                        }
+
+                        //HarrisResponses(cellImage,cellKeyPoints[i][j], 7, HARRIS_K);
+                        const int nKeys = cellKeyPoints[i][j].size();
+                        nTotal[i][j] = nKeys;
+
+                        if(nKeys>nFeatureEachCell)
+                        {
+                            nToRetain[i][j] = nFeatureEachCell;
+                            bNoMore[i][j] = false;
+                        }
+                        else
+                        {
+                            nToRetain[i][j] = nKeys;
+                            nToDistribute += nFeatureEachCell-nKeys;
+                            bNoMore[i][j] = true;
+                            nNoMore++;
+                        }
+                    }
+                }
+
+                while(nToDistribute>0 && nNoMore<nCells)
+                {
+                    int nNewFeaturesCell = nFeatureEachCell + ceil((float)nToDistribute/(nCells-nNoMore));
+                    nToDistribute = 0;
+
+                    for(int i=0; i< nRows; i++)
+                    {
+                        for(int j=0; j<nCols; j++)
+                        {
+                            if(!bNoMore[i][j])
+                            {
+                                if(nTotal[i][j]>nNewFeaturesCell)
+                                {
+                                    nToRetain[i][j] = nNewFeaturesCell;
+                                    bNoMore[i][j] = false;
+                                }
+                                else
+                                {
+                                    nToRetain[i][j] = nTotal[i][j];
+                                    nToDistribute += nNewFeaturesCell-nTotal[i][j];
+                                    bNoMore[i][j] = true;
+                                    nNoMore++;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                keypoints.reserve(nDesiredFeatures*2);
+
+                for(int i=0; i<nRows; i++)
+                {
+                    for(int j=0; j<nCols; j++)
+                    {
+                        vector<KeyPoint> &keysCell = cellKeyPoints[i][j];
+                        KeyPointsFilter::retainBest(keysCell,nToRetain[i][j]);
+                        if((int)keysCell.size()>nToRetain[i][j])
+                            keysCell.resize(nToRetain[i][j]);
+
+                        for(size_t k=0, kend=keysCell.size(); k<kend; k++)
+                        {
+                            keysCell[k].pt.x+=j*wCell;
+                            keysCell[k].pt.y+=i*hCell;
+                            keysCell[k].size = 15;
+                            keypoints.push_back(keysCell[k]);
+                        }
+                    }
+                }
+
+                if((int)keypoints.size()>nDesiredFeatures)
+                {
+                    KeyPointsFilter::retainBest(keypoints,nDesiredFeatures);
+                    keypoints.resize(nDesiredFeatures);
+                }
+            } else
+                n_pts.clear();
+#endif
+
+#ifdef harris
         for (auto &p : n_pts) {
             forw_pts.push_back(p);
             ids.push_back(-1);
             track_cnt.push_back(1);
         }
-
+#else
+        for (auto &p : keypoints) {
+            forw_pts.push_back(p.pt);
+            ids.push_back(-1);
+            track_cnt.push_back(1);
+        }
+#endif
         //waitKey(0);
         //prev_img = cur_img;
         //prev_pts = cur_pts;
@@ -224,7 +369,7 @@ int main ( int argc, char** argv ) {
         cur_img = forw_img;
         cur_pts = forw_pts;
         imgPreColor = imgColor.clone();
-        forw_kpts.clear();
+        keypoints.clear();
         //undistortedPoints();
         //prev_time = cur_time;
     }
