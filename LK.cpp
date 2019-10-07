@@ -19,6 +19,8 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv/cv.hpp>
 
+#define harris
+
 using namespace std;
 using namespace cv;
 
@@ -82,6 +84,7 @@ int main ( int argc, char** argv ) {
     vector<cv::Point2f> n_pts;
     vector<int> track_cnt;
     vector<int> ids;
+    Mat imgPreColor;
 
     //保存轨迹
     //ofstream out("../../data/data/trajectory.txt", ofstream::out);
@@ -91,7 +94,10 @@ int main ( int argc, char** argv ) {
         cout << "*********** loop " << index << " ************" << endl;
         fin >> time_rgb >> rgb_file >> time_depth >> depth_file;
         cout << time_rgb << " " << rgb_file << " " << time_depth << " " << depth_file << endl;
-        Mat img = cv::imread(path_to_dataset + "/" + rgb_file, 0);
+        Mat imgColor = cv::imread(path_to_dataset + "/" + rgb_file,1);
+
+        Mat img;
+        cvtColor(imgColor,img,COLOR_BGR2GRAY);
 
         //直方图均衡化
         cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(3.0, cv::Size(8, 8));
@@ -99,6 +105,7 @@ int main ( int argc, char** argv ) {
 
         if (forw_img.empty()) {
             cur_img = forw_img = img;
+            imgPreColor = imgColor;
         } else {
             forw_img = img;
         }
@@ -138,6 +145,24 @@ int main ( int argc, char** argv ) {
             reduceVector(track_cnt, status);
         }
 
+        cv::Mat img_window(forw_img.rows*2, forw_img.cols, CV_8UC3 );//8位unsigned 3通道
+        imgPreColor.copyTo(img_window(cv::Rect(0,0,cur_img.cols,cur_img.rows)));
+        imgColor.copyTo(img_window(cv::Rect(0,forw_img.rows,forw_img.cols, forw_img.rows)));
+
+        for(int i=0;i<cur_pts.size();i++){
+//            if (rand() > RAND_MAX/5 )
+//                continue;
+            float b = 255*float ( rand() ) /RAND_MAX;//用随机颜色框选特征点
+            float g = 255*float ( rand() ) /RAND_MAX;
+            float r = 255*float ( rand() ) /RAND_MAX;
+            cv::circle(img_window,cur_pts[i],4,cv::Scalar( b,g,r ),2);
+            cv::circle(img_window,Point2f(forw_pts[i].x ,forw_pts[i].y + forw_img.rows),4,cv::Scalar( b,g,r), 2);
+            cv::line(img_window,cur_pts[i],Point2f(forw_pts[i].x ,forw_pts[i].y + forw_img.rows),cv::Scalar( b,g,r), 1);
+        }
+        cv::imshow ("result", img_window);
+        cv::waitKey ( 0 );
+
+        //为下一次特征提取做准备
         Mat mask;
         //设置mask用于非极大值抑制
         {
@@ -175,8 +200,14 @@ int main ( int argc, char** argv ) {
                 cout << "mask type wrong " << endl;
             if (mask.size() != forw_img.size())
                 cout << "wrong size " << endl;
+#ifdef harris
             //优先从之前跟踪到的特征点中提取角点,虽然这些特征点被非极大值抑制掉了，认为没有成功跟踪，但是可以优先作为新的特征点被提取
             cv::goodFeaturesToTrack(forw_img, n_pts, MAX_CNT - forw_pts.size(), 0.01, MIN_DIST, mask);
+#else
+            vector<KeyPoint> kp;
+            FAST(forw_img,kp,20,true);
+#endif
+
         } else
             n_pts.clear();
 
@@ -186,20 +217,13 @@ int main ( int argc, char** argv ) {
             track_cnt.push_back(1);
         }
 
-        for(auto& p:forw_pts)
-        {
-            KeyPoint kp(p,5);
-            forw_kpts.push_back(kp);
-        }
-        Mat out_img;
-        drawKeypoints(forw_img,forw_kpts,out_img);
-        imshow("test",out_img);
-        waitKey(0);
+        //waitKey(0);
         //prev_img = cur_img;
         //prev_pts = cur_pts;
         //prev_un_pts = cur_un_pts;
         cur_img = forw_img;
         cur_pts = forw_pts;
+        imgPreColor = imgColor.clone();
         forw_kpts.clear();
         //undistortedPoints();
         //prev_time = cur_time;
