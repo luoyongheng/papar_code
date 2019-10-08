@@ -26,7 +26,7 @@ using namespace cv;
 
 int ROW = 480;
 int COL = 640;
-int MAX_CNT = 150;
+int MAX_CNT = 200;
 int MIN_DIST = 30;
 int iniThFAST = 20;
 int minThFAST = 7;
@@ -82,7 +82,8 @@ int main ( int argc, char** argv ) {
 
     string rgb_file, depth_file, time_rgb, time_depth;
     cv::Mat forw_img, cur_img;
-    vector<KeyPoint> keypoints;;
+    vector<KeyPoint> keypoints;
+    vector<KeyPoint> vKeyPoints;
     vector<Point2f> forw_pts, cur_pts;
     vector<cv::Point2f> n_pts;
     vector<int> track_cnt;
@@ -340,10 +341,26 @@ int main ( int argc, char** argv ) {
                     }
                 }
 
-                if((int)keypoints.size()>nDesiredFeatures)
+                //排除提取到跟踪的特征点
+                for(auto& k:keypoints){
+                    if(forw_pts.empty()){
+                        vKeyPoints = keypoints;
+                    }
+                    else{
+                        auto it = forw_pts.begin();
+                        for(;it!=forw_pts.end();it++){
+                            if(norm(*it - k.pt)<30) //追踪到的点半径为30的方位内不提取新的特征点
+                                break;
+                        }
+                        if(it == forw_pts.end())
+                            vKeyPoints.push_back(k);
+                    }
+                }
+
+                if((int)vKeyPoints.size()>nDesiredFeatures)
                 {
-                    KeyPointsFilter::retainBest(keypoints,nDesiredFeatures);
-                    keypoints.resize(nDesiredFeatures);
+                    KeyPointsFilter::retainBest(vKeyPoints,nDesiredFeatures);
+                    vKeyPoints.resize(nDesiredFeatures);
                 }
             } else
                 n_pts.clear();
@@ -356,7 +373,7 @@ int main ( int argc, char** argv ) {
             track_cnt.push_back(1);
         }
 #else
-        for (auto &p : keypoints) {
+        for (auto &p : vKeyPoints) {
             forw_pts.push_back(p.pt);
             ids.push_back(-1);
             track_cnt.push_back(1);
@@ -370,6 +387,7 @@ int main ( int argc, char** argv ) {
         cur_pts = forw_pts;
         imgPreColor = imgColor.clone();
         keypoints.clear();
+        vKeyPoints.clear();
         //undistortedPoints();
         //prev_time = cur_time;
     }
