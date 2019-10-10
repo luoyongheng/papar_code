@@ -26,7 +26,7 @@ using namespace cv;
 
 int ROW = 480;
 int COL = 640;
-int MAX_CNT = 200;
+int MAX_CNT = 180;
 int MIN_DIST = 30;
 int iniThFAST = 20;
 int minThFAST = 7;
@@ -58,6 +58,15 @@ void reduceVector(vector<cv::Point2f> &v, vector<uchar> status)
     v.resize(j);
 }
 
+Point2d pixel2cam ( const Point2d& p, const Mat& K )
+{
+    return Point2d
+            (
+                    ( p.x - K.at<double> ( 0,2 ) ) / K.at<double> ( 0,0 ),
+                    ( p.y - K.at<double> ( 1,2 ) ) / K.at<double> ( 1,1 )
+            );
+}
+
 
 int main ( int argc, char** argv ) {
     //相机参数
@@ -66,8 +75,10 @@ int main ( int argc, char** argv ) {
     float fx = 517.3;
     float fy = 516.5;
 
-    Eigen::Matrix3f K;
+    Eigen::Matrix<float,3,3> K;
+    Mat cvK;
     K << fx, 0.f, cx, 0.f, fy, cy, 0.f, 0.f, 1.0f;
+    cvK = (Mat_<double>(3,3)<<fx, 0.f, cx, 0.f, fy, cy, 0.f, 0.f, 1.0f);
 
     //-- 读取图像
     if (argc != 2) {
@@ -82,6 +93,7 @@ int main ( int argc, char** argv ) {
 
     string rgb_file, depth_file, time_rgb, time_depth;
     cv::Mat forw_img, cur_img;
+    cv::Mat forw_depth,cur_depth;
     vector<KeyPoint> keypoints;
     vector<KeyPoint> vKeyPoints;
     vector<Point2f> forw_pts, cur_pts;
@@ -90,15 +102,18 @@ int main ( int argc, char** argv ) {
     vector<int> ids;
     Mat imgPreColor;
 
+    vector<Point3f> pts_3d;
+    vector<Point2f> pts_2d;
     //保存轨迹
     //ofstream out("../../data/data/trajectory.txt", ofstream::out);
 
     // 我们以第一个图像为参考，对后续10张图像和参考图像做直接法
-    for (int index = 0; index < 20; index++) {
+    for (int index = 0; index < 40; index++) {
         cout << "*********** loop " << index << " ************" << endl;
         fin >> time_rgb >> rgb_file >> time_depth >> depth_file;
         cout << time_rgb << " " << rgb_file << " " << time_depth << " " << depth_file << endl;
         Mat imgColor = cv::imread(path_to_dataset + "/" + rgb_file,1);
+        //Mat imgDepth = cv::imread(path_to_dataset + "/" + depth_file,-1);
 
         Mat img;
         cvtColor(imgColor,img,COLOR_BGR2GRAY);
@@ -109,9 +124,11 @@ int main ( int argc, char** argv ) {
 
         if (forw_img.empty()) {
             cur_img = forw_img = img;
+            //cur_depth = forw_depth = imgDepth;
             imgPreColor = imgColor;
         } else {
             forw_img = img;
+            //forw_depth = imgDepth;
         }
 
         forw_pts.clear();
@@ -148,6 +165,30 @@ int main ( int argc, char** argv ) {
             reduceVector(ids, status);
             reduceVector(track_cnt, status);
         }
+
+//        //开始PnP
+//        for(int i=0;i<cur_pts.size();i++){
+//            ushort d = cur_depth.ptr<unsigned short> (int ( cur_pts[i].y )) [ int ( cur_pts[i].x) ];
+//            if(d == 0)
+//                continue;
+//            float dd = d/5000.0;
+//            Point2d p1 = pixel2cam ( cur_pts[i], cvK );
+//            pts_3d.push_back ( Point3f ( p1.x*dd, p1.y*dd, dd ) );
+//            pts_2d.push_back ( forw_pts[i] );
+//        }
+//
+//        if(!cur_pts.empty()){
+//            cout<<"3d-2d pairs: "<<pts_3d.size() <<endl;
+//
+//            Mat r, t;
+//
+//            solvePnP ( pts_3d, pts_2d, cvK, Mat(), r, t, false ); // 调用OpenCV 的 PnP 求解，可选择EPNP，DLS等方法
+//            Mat R;
+//            cv::Rodrigues ( r, R ); // r为旋转向量形式，用Rodrigues公式转换为矩阵
+//
+//            cout<<"R="<<endl<<R<<endl;
+//            cout<<"t="<<endl<<t<<endl;
+//        }
 
         cv::Mat img_window(forw_img.rows*2, forw_img.cols, CV_8UC3 );//8位unsigned 3通道
         imgPreColor.copyTo(img_window(cv::Rect(0,0,cur_img.cols,cur_img.rows)));
@@ -216,8 +257,9 @@ int main ( int argc, char** argv ) {
             //fast特征点提取
 
             const int nDesiredFeatures = MAX_CNT - forw_pts.size();
-            if(nDesiredFeatures>0)
+            if(nDesiredFeatures>0 && nDesiredFeatures>35)//新添加的特征点个数小于40，说明跟踪质量较好，使用fast继续跟踪
             {
+                cout<<"from fast"<<endl;
                 const int nCols = int(COL/W);//21
                 const int nRows = int(ROW/W);//16
                 const int nCells = nCols*nRows;
@@ -270,7 +312,7 @@ int main ( int argc, char** argv ) {
                         if(cellKeyPoints[i][j].size()<=3)
                         {
                             cellKeyPoints[i][j].clear();
-                            FAST(forw_img.rowRange(iniY,maxY).colRange(iniX,maxX),cellKeyPoints[i][j],7,true);
+                            FAST(forw_img.rowRange(iniY,maxY).colRange(iniX,maxX),cellKeyPoints[i][j],minThFAST,true);
                         }
 
                         //HarrisResponses(cellImage,cellKeyPoints[i][j], 7, HARRIS_K);
@@ -345,7 +387,7 @@ int main ( int argc, char** argv ) {
                 for(auto& k:keypoints){
                     if(forw_pts.empty()){
                         vKeyPoints = keypoints;
-                    }
+                    }//第一帧特征提取不是特别均匀
                     else{
                         auto it = forw_pts.begin();
                         for(;it!=forw_pts.end();it++){
@@ -362,6 +404,47 @@ int main ( int argc, char** argv ) {
                     KeyPointsFilter::retainBest(vKeyPoints,nDesiredFeatures);
                     vKeyPoints.resize(nDesiredFeatures);
                 }
+            } else if(nDesiredFeatures>0){
+                Mat mask;
+                //设置mask用于非极大值抑制
+                {
+                    mask = cv::Mat(ROW, COL, CV_8UC1, cv::Scalar(255));
+
+                    vector<pair<int, pair<cv::Point2f, int>>> cnt_pts_id;
+
+                    for (unsigned int i = 0; i < forw_pts.size(); i++)
+                        cnt_pts_id.push_back(make_pair(track_cnt[i], make_pair(forw_pts[i], ids[i])));
+
+                    sort(cnt_pts_id.begin(), cnt_pts_id.end(),
+                         [](const pair<int, pair<cv::Point2f, int>> &a, const pair<int, pair<cv::Point2f, int>> &b) {
+                             return a.first > b.first;
+                         });
+
+                    forw_pts.clear();
+                    ids.clear();
+                    track_cnt.clear();
+
+                    for (auto &it : cnt_pts_id) {
+                        if (mask.at<uchar>(it.second.first) == 255) {
+                            forw_pts.push_back(it.second.first);
+                            ids.push_back(it.second.second);
+                            track_cnt.push_back(it.first);
+                            cv::circle(mask, it.second.first, MIN_DIST, 0, -1);
+                        }
+                    }
+                }
+
+                if (nDesiredFeatures > 0) {
+                    if (mask.empty())
+                        cout << "mask is empty " << endl;
+                    if (mask.type() != CV_8UC1)
+                        cout << "mask type wrong " << endl;
+                    if (mask.size() != forw_img.size())
+                        cout << "wrong size " << endl;
+
+                    //优先从之前跟踪到的特征点中提取角点,虽然这些特征点被非极大值抑制掉了，认为没有成功跟踪，但是可以优先作为新的特征点被提取
+                    cv::goodFeaturesToTrack(forw_img, n_pts, nDesiredFeatures, 0.01, MIN_DIST, mask);
+                }
             } else
                 n_pts.clear();
 #endif
@@ -373,16 +456,27 @@ int main ( int argc, char** argv ) {
             track_cnt.push_back(1);
         }
 #else
-        for (auto &p : vKeyPoints) {
-            forw_pts.push_back(p.pt);
-            ids.push_back(-1);
-            track_cnt.push_back(1);
+        if(!n_pts.empty()){
+            for (auto &p : n_pts) {
+                forw_pts.push_back(p);
+                ids.push_back(-1);
+                track_cnt.push_back(1);
+            }
+        }
+        n_pts.clear();
+        if(!vKeyPoints.empty()){
+            for (auto &p : vKeyPoints) {
+                forw_pts.push_back(p.pt);
+                ids.push_back(-1);
+                track_cnt.push_back(1);
+            }
         }
 #endif
         //waitKey(0);
         //prev_img = cur_img;
         //prev_pts = cur_pts;
         //prev_un_pts = cur_un_pts;
+        cur_depth = forw_depth;
         cur_img = forw_img;
         cur_pts = forw_pts;
         imgPreColor = imgColor.clone();
